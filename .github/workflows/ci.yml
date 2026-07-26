@@ -1,0 +1,68 @@
+name: CI
+
+# RU: Гоняем на каждый push и PR в рабочие ветки. Тесты не требуют ни сети, ни
+# базы, ни секретов — поэтому CI здесь дешёвый и быстрый, около минуты.
+on:
+  push:
+    branches: [main, dev, qa]
+  pull_request:
+    branches: [main, dev, qa]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # RU: 3.10 — минимальная поддерживаемая версия (она же на локальной
+        # машине владельца), 3.12 — то, что стоит на свежих Debian/Ubuntu.
+        # Проект обязан работать на обеих.
+        python: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # RU: Node нужен только тестам паритета Python/JS и проверке DOCX.
+      # Без него они пропускаются, но тогда главный инвариант проекта
+      # (документ в браузере совпадает с документом на сервере) не проверен.
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Инструменты разработчика
+        run: pip install --disable-pip-version-check pytest ruff
+
+      # RU: Рантайм-зависимостей у проекта нет вообще — ставить нечего.
+      # Если здесь однажды появится pip install requirements.txt,
+      # значит архитектурное решение изменили; это обсуждается отдельно.
+      - name: Проверка отсутствия рантайм-зависимостей
+        run: |
+          if [ -f requirements.txt ]; then
+            echo "requirements.txt появился — проект должен жить на stdlib"
+            exit 1
+          fi
+
+      - name: Линтер
+        run: ruff check src tests scripts
+
+      - name: Синтаксис
+        run: python -m compileall -q src scripts
+
+      - name: Тесты
+        run: PYTHONPATH=src python -m pytest tests -q
+
+      - name: Паритет Python и JS выполнен, а не пропущен
+        run: |
+          PYTHONPATH=src python -m pytest tests/test_js_parity.py tests/test_docx_export.py -q -rs \
+            | tee /tmp/parity.txt
+          if grep -q "skipped" /tmp/parity.txt; then
+            echo "Тесты паритета пропущены — значит инвариант не проверен"
+            exit 1
+          fi

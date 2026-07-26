@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Запрет прямого пуша в main и быстрый прогон тестов перед отправкой.
+#
+# main — это то, что стоит на сервере. Прямой пуш туда означает, что на прод
+# уехало то, что никто не смотрел. Правильный путь: работать в dev, сливать
+# осознанно.
+#
+# Установка: bash scripts/install_git_hooks.sh
+# Обход (только с явного решения владельца): ALLOW_MAIN_PUSH=1 git push
+set -euo pipefail
+
+protected="refs/heads/main"
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+    if [ "$remote_ref" = "$protected" ] && [ "${ALLOW_MAIN_PUSH:-}" != "1" ]; then
+        echo "Прямой пуш в main запрещён." >&2
+        echo "Сливайте через dev, либо ALLOW_MAIN_PUSH=1 git push — осознанно." >&2
+        exit 1
+    fi
+done
+
+# RU: Тесты идут ~3 секунды и не требуют сети — дешевле прогнать, чем узнать
+# о падении из CI через пять минут.
+root="$(git rev-parse --show-toplevel)"
+if [ -d "$root/tests" ]; then
+    echo "pre-push: прогоняю тесты…"
+    if ! PYTHONPATH="$root/src" python3 -m pytest "$root/tests" -q >/tmp/dokumatika-prepush.log 2>&1; then
+        echo "Тесты не прошли, пуш остановлен. Лог: /tmp/dokumatika-prepush.log" >&2
+        tail -20 /tmp/dokumatika-prepush.log >&2
+        exit 1
+    fi
+    echo "pre-push: тесты зелёные"
+fi
