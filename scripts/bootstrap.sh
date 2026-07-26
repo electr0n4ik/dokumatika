@@ -165,7 +165,11 @@ gen_secret() {
 
 # version_ge A B — истина, если версия A не младше B.
 version_ge() {
-    [ "$1" = "$2" ] && return 0
+    if [ "$1" = "$2" ]; then
+        return 0
+    fi
+    # RU: sed -n 1p, а не head: head закрывает конвейер досрочно, sort получает
+    # SIGPIPE, и при pipefail это выглядит как ошибка сравнения версий.
     [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | sed -n 1p)" = "$2" ]
 }
 
@@ -434,9 +438,9 @@ ROBOKASSA_TEST_PASSWORD2=
 # комплект даром, поэтому в админке на этот случай висит красный баннер.
 ROBOKASSA_TEST_MODE=1
 # ОБЯЗАН совпадать с алгоритмом, выбранным в кабинете Robokassa. В кабинете по
-# умолчанию MD5; расхождение даёт на платёжной странице ошибку 29 и больше
-# ничего не сообщает. Меняйте в двух местах одновременно.
-ROBOKASSA_HASH_ALGORITHM=md5
+# умолчанию стоит MD5, здесь — sha256, поэтому в кабинете его НУЖНО переключить.
+# Расхождение даёт на платёжной странице ошибку 29 и больше ничего не сообщает.
+ROBOKASSA_HASH_ALGORITHM=sha256
 # Товар цифровой и передаётся сразу после оплаты; самозанятый НДС не платит.
 ROBOKASSA_RECEIPT_PAYMENT_METHOD=full_payment
 ROBOKASSA_RECEIPT_PAYMENT_OBJECT=service
@@ -616,7 +620,9 @@ EOF
                 --email "$LE_EMAIL" --agree-tos --no-eff-email \
                 --non-interactive --keep-until-expiring; then
             TLS_READY=1
-            [ -n "$WWW_IPS" ] && WWW_IN_CERT=1 || true
+            if [ -n "$WWW_IPS" ]; then
+                WWW_IN_CERT=1
+            fi
             ok "сертификат выпущен"
         else
             warn "certbot не смог подтвердить владение доменом"
