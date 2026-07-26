@@ -227,17 +227,40 @@ class OrdersRepository:
         return [order for order in (self._row_to_order(row) for row in rows) if order is not None]
 
     def stats(self) -> dict[str, Any]:
-        """Сводка для админки: сколько заказов и денег по статусам."""
+        """Сводка для админки: сколько заказов и денег по статусам.
+
+        Выручка считается ТОЛЬКО по боевым заказам (``is_test = 0``). При забытом
+        ``ROBOKASSA_TEST_MODE=1`` тестовая оплата проходит без списания денег, и в
+        общей строке она показала бы владельцу выручку, которой не существует.
+        Тестовые оплаты возвращаются отдельными полями — чтобы забытый режим было
+        видно сразу, а не по расхождению с выпиской.
+        """
         with self._db.read() as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) AS cnt, COALESCE(SUM(amount_minor), 0) AS total FROM orders GROUP BY status"
+                """
+                SELECT status, is_test, COUNT(*) AS cnt, COALESCE(SUM(amount_minor), 0) AS total
+                FROM orders GROUP BY status, is_test
+                """
             ).fetchall()
-        by_status = {str(row["status"]): {"count": int(row["cnt"]), "amount_minor": int(row["total"])} for row in rows}
-        paid = by_status.get(STATUS_PAID, {"count": 0, "amount_minor": 0})
+        by_status: dict[str, dict[str, int]] = {}
+        live = {"count": 0, "amount_minor": 0}
+        test = {"count": 0, "amount_minor": 0}
+        for row in rows:
+            status = str(row["status"])
+            bucket = by_status.setdefault(status, {"count": 0, "amount_minor": 0})
+            bucket["count"] += int(row["cnt"])
+            bucket["amount_minor"] += int(row["total"])
+            if status != STATUS_PAID:
+                continue
+            target = test if bool(row["is_test"]) else live
+            target["count"] += int(row["cnt"])
+            target["amount_minor"] += int(row["total"])
         return {
             "by_status": by_status,
-            "paid_count": paid["count"],
-            "paid_amount_minor": paid["amount_minor"],
+            "paid_count": live["count"],
+            "paid_amount_minor": live["amount_minor"],
+            "test_paid_count": test["count"],
+            "test_paid_amount_minor": test["amount_minor"],
         }
 
     # ------------------------------------------------------------ переходы

@@ -98,13 +98,43 @@ class Database:
 
     @contextmanager
     def _lease(self) -> Iterator[sqlite3.Connection]:
-        """Взять соединение из пула и обязательно вернуть его обратно."""
+        """Взять соединение из пула и обязательно вернуть его обратно — чистым."""
         self._ensure_initialized()
         conn = self._pool.get()
         try:
             yield conn
         finally:
-            self._pool.put(conn)
+            self._pool.put(self._recycled(conn))
+
+    def _recycled(self, conn: sqlite3.Connection) -> sqlite3.Connection:
+        """Привести соединение в состояние «вне транзакции» перед возвратом в пул.
+
+        Пул — ``LifoQueue``, поэтому соединение с недозакрытой транзакцией
+        досталось бы следующему же вызову, и все записи падали бы с «cannot start
+        a transaction within a transaction» до перезапуска процесса. Один сбойный
+        ``COMMIT`` (полный диск, SQLITE_BUSY на чекпойнте) не должен выводить из
+        строя весь пул.
+        """
+        try:
+            if not conn.in_transaction:
+                return conn
+            conn.execute("ROLLBACK")
+            if not conn.in_transaction:
+                return conn
+        except sqlite3.Error:
+            pass
+        try:
+            replacement = self._new_connection()
+        except sqlite3.Error:
+            # RU: Заменить не вышло (диск/права). Слот пула терять нельзя: после
+            # нескольких таких потерь ``_pool.get()`` повиснет навсегда. Возвращаем
+            # как есть — следующий лизинг повторит попытку отката.
+            return conn
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        return replacement
 
     def close(self) -> None:
         while True:
@@ -127,11 +157,29 @@ class Database:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
-            except Exception:
-                conn.execute("ROLLBACK")
+            except BaseException:
+                self._rollback_quietly(conn)
                 raise
             else:
-                conn.execute("COMMIT")
+                try:
+                    conn.execute("COMMIT")
+                except BaseException:
+                    # RU: Падение самого COMMIT оставляет транзакцию открытой —
+                    # откатываем явно, иначе соединение уедет в пул грязным.
+                    self._rollback_quietly(conn)
+                    raise
+
+    @staticmethod
+    def _rollback_quietly(conn: sqlite3.Connection) -> None:
+        """Откатить, не заслоняя исходную ошибку своей.
+
+        Если и ``ROLLBACK`` не прошёл, соединение починит ``_recycled`` при
+        возврате в пул: там оно будет заменено на новое.
+        """
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
 
     @contextmanager
     def read(self) -> Iterator[sqlite3.Connection]:

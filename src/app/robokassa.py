@@ -85,6 +85,10 @@ ALLOWED_RECEIPT_TAXES = frozenset(
     {"none", "vat0", "vat5", "vat7", "vat10", "vat20", "vat22", "vat105", "vat107", "vat110", "vat120", "vat122"}
 )
 
+# RU: Robokassa живёт в московском времени; zoneinfo не берём — база tzdata на
+# сервере может отсутствовать, а смещение у Москвы постоянное с 2014 года.
+MOSCOW_TZ = timezone(timedelta(hours=3))
+
 DEFAULT_RECEIPT_PAYMENT_METHOD = "full_payment"
 DEFAULT_RECEIPT_PAYMENT_OBJECT = "service"
 DEFAULT_RECEIPT_TAX = "none"
@@ -197,6 +201,17 @@ def hash_signature(value: str, algorithm: str) -> str:
     return digest.hexdigest()
 
 
+def signatures_match(expected: str, received: str) -> bool:
+    """Сравнить подписи за постоянное время, не спотыкаясь о не-ASCII.
+
+    Сравниваем именно БАЙТЫ: ``secrets.compare_digest`` на str с не-ASCII кидает
+    ``TypeError``, а ``SignatureValue`` приходит снаружи. Исключение улетало бы в
+    общий обработчик и превращалось в 500 — а на 500 Robokassa повторяет колбэк,
+    и попытка подделки не попадала бы в лог отказов вообще.
+    """
+    return secrets.compare_digest(expected.lower().encode("utf-8"), received.lower().encode("utf-8"))
+
+
 def collect_shp_params(values: dict[str, str]) -> list[tuple[str, str]]:
     """Собрать пользовательские ``Shp_*`` в алфавитном порядке.
 
@@ -287,8 +302,18 @@ def build_expiration_date(hours: int = 24, *, now: datetime | None = None) -> st
 
     Ограничение срока жизни ссылки — защита от оплаты по устаревшей цене:
     просроченная форма вернёт ошибку 33 вместо неожиданного платежа.
+
+    Считаем в МОСКОВСКОМ времени, а не в UTC. Смещение в строку не попадает, а
+    наивное время российский платёжный сервис читает как своё (UTC+3) — счёт,
+    посчитанный в UTC, умирал бы на три часа раньше обещанного, а при ``hours``
+    меньше трёх дата уезжала бы в прошлое и покупатель получал бы ошибку 33
+    вместо платёжной формы.
     """
-    moment = (now or datetime.now(timezone.utc)) + timedelta(hours=int(hours))
+    base = now or datetime.now(timezone.utc)
+    # RU: Наивное время трактуем как UTC — так же, как его отдаёт datetime.utcnow().
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    moment = base.astimezone(MOSCOW_TZ) + timedelta(hours=int(hours))
     return moment.strftime("%Y-%m-%dT%H:%M")
 
 
@@ -419,7 +444,7 @@ def verify_result_callback(
         config.hash_algorithm,
     )
     # RU: Сравнение регистронезависимое — Robokassa шлёт hex в верхнем регистре.
-    if not secrets.compare_digest(expected_signature.lower(), signature_value.lower()):
+    if not signatures_match(expected_signature, signature_value):
         return ResultVerification(False, "invalid_signature", order_id, invoice_id, out_sum)
 
     return ResultVerification(True, "ok", order_id, invoice_id, out_sum)
@@ -454,7 +479,7 @@ def verify_success_callback(
         build_signature_base(out_sum, invoice_id, password1, shp_params=shp_params),
         config.hash_algorithm,
     )
-    if not secrets.compare_digest(expected_signature.lower(), signature_value.lower()):
+    if not signatures_match(expected_signature, signature_value):
         return ResultVerification(False, "invalid_signature", order_id, invoice_id, out_sum)
     return ResultVerification(True, "ok", order_id, invoice_id, out_sum)
 

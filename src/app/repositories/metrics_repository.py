@@ -47,9 +47,49 @@ KNOWN_EVENTS = frozenset(
 MAX_LABEL_LENGTH = 48
 
 # RU: Метки генерирует наш же клиент и они всегда латинские слаги вроде "step-2".
-# Ограничение до ASCII не косметическое: /api/track открыт наружу, и без него
-# можно наплодить произвольное число уникальных меток, раздув таблицу.
+# Ограничение алфавита отсекает разметку и кавычки, но НЕ ограничивает число
+# значений — за это отвечает белый список ниже.
 ALLOWED_LABEL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_.:")
+
+# RU: Метка, под которую сводится всё незнакомое.
+OTHER_LABEL = "other"
+
+# RU: Визард из пяти шагов; метки шагов формирует wizard.js как "step-<номер>".
+_STEP_LABELS = frozenset(f"step-{number}" for number in range(1, 6))
+
+# RU: Коды документов — метки скачиваний из package.js.
+_DOCUMENT_LABELS = frozenset(
+    {
+        "policy",
+        "consent",
+        "consent_marketing",
+        "cookie_policy",
+        "order_responsible",
+        "consent_withdrawal",
+        "requests_journal",
+        "rkn_notice_guide",
+    }
+)
+
+_FORMAT_LABELS = frozenset({"docx", "html", "print", "copy", "zip"})
+
+# RU: Ключевая защита /api/track: PRIMARY KEY (day, event, label) создаёт строку
+# на каждую НОВУЮ метку, поэтому без списка допустимых значений скрипт с одним
+# счётчиком в метке пишет по строке на запрос и раздувает базу и WAL. Метки шлёт
+# наш же клиент, их конечное число — всё остальное схлопывается в OTHER_LABEL.
+# Новый код документа, забытый в этом списке, ничего не ломает: событие всё равно
+# сосчитается, просто попадёт в "other".
+KNOWN_LABELS: dict[str, frozenset[str]] = {
+    "page_view": frozenset(),
+    "wizard_start": _STEP_LABELS,
+    "wizard_step": _STEP_LABELS,
+    "wizard_complete": frozenset({"policy"}),
+    "policy_download": _FORMAT_LABELS,
+    "checkout_click": frozenset({"komplekt", "checklist"}),
+    "checkout_created": frozenset({"komplekt_152fz"}),
+    "order_paid": frozenset({"komplekt_152fz"}),
+    "package_download": _DOCUMENT_LABELS | _FORMAT_LABELS,
+}
 
 
 @dataclass(frozen=True)
@@ -69,6 +109,10 @@ class MetricsRepository:
 
     @staticmethod
     def normalize(event: str, label: str = "") -> tuple[str, str] | None:
+        """Отсеять неизвестное событие и почистить символы метки.
+
+        Кардинальность здесь ещё не ограничена — этим занимается ``resolve``.
+        """
         name = str(event or "").strip()
         if name not in KNOWN_EVENTS:
             return None
@@ -76,11 +120,27 @@ class MetricsRepository:
         clean_label = "".join(char for char in lowered if char in ALLOWED_LABEL_CHARS)
         return name, clean_label[:MAX_LABEL_LENGTH]
 
-    def track(self, event: str, label: str = "", *, day: str | None = None) -> bool:
-        normalized = self.normalize(event, label)
+    @classmethod
+    def resolve(cls, event: str, label: str = "") -> tuple[str, str] | None:
+        """Событие и метка в том виде, в каком они лягут в таблицу.
+
+        Незнакомая метка превращается в ``other``: число строк на событие в
+        сутки становится конечным, и публичный ``/api/track`` больше не может
+        раздувать таблицу уникальными значениями.
+        """
+        normalized = cls.normalize(event, label)
         if normalized is None:
-            return False
+            return None
         name, clean_label = normalized
+        if clean_label and clean_label not in KNOWN_LABELS.get(name, frozenset()):
+            return name, OTHER_LABEL
+        return name, clean_label
+
+    def track(self, event: str, label: str = "", *, day: str | None = None) -> bool:
+        resolved = self.resolve(event, label)
+        if resolved is None:
+            return False
+        name, clean_label = resolved
         current_day = day or datetime.now(timezone.utc).date().isoformat()
         with self._db.transaction() as conn:
             conn.execute(

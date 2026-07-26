@@ -409,6 +409,45 @@ def build_payment_return_page(
     )
 
 
+def build_admin_login_page(
+    *,
+    site: SiteConfig,
+    error: str = "",
+    query_token_seen: bool = False,
+) -> tuple[PageMeta, Raw]:
+    """Форма входа в админку.
+
+    Токен вводится в поле и уходит POST-ом, а не в адресной строке: query-строка
+    целиком ложится в access-лог nginx, в историю браузера и в Referer, а по
+    этому токену видны e-mail всех покупателей.
+    """
+    problem = callout("Не вошли", error, tone="warn") if error else Raw("")
+    hint = (
+        callout(
+            "Токен из ссылки не принимается",
+            "Адресная строка попадает в логи и в историю браузера. Вставьте токен в поле ниже.",
+            tone="info",
+        )
+        if query_token_seen
+        else Raw("")
+    )
+    body = Raw(
+        '<section class="orderpage">'
+        "<h1>Вход в панель</h1>"
+        f'<p class="muted">Служебный раздел «{esc(site.brand)}».</p>'
+        f"{esc(problem)}{esc(hint)}"
+        '<form method="POST" action="/admin/" class="adminlogin">'
+        '<p><label for="admin-token">Токен администратора</label></p>'
+        '<p><input id="admin-token" name="token" type="password" autocomplete="off" '
+        'autocapitalize="off" spellcheck="false" required></p>'
+        '<p><button class="btn btn-p" type="submit">Войти</button></p>'
+        "</form>"
+        "</section>"
+    )
+    meta = PageMeta(path="/admin/", title="Вход в панель", description="Служебная страница.", noindex=True)
+    return meta, body
+
+
 def build_admin_page(
     *,
     site: SiteConfig,
@@ -421,6 +460,20 @@ def build_admin_page(
 ) -> tuple[PageMeta, Raw]:
     """Сводка для владельца: деньги, заказы, воронка, состояние рубильников."""
     paid_amount = stats.get("paid_amount_minor", 0) // 100
+    test_amount = stats.get("test_paid_amount_minor", 0) // 100
+    test_count = stats.get("test_paid_count", 0)
+    # RU: Забытый ROBOKASSA_TEST_MODE=1 раздаёт комплект бесплатно, поэтому баннер
+    # висит вверху страницы, а не прячется строкой в списке рубильников.
+    test_banner = (
+        callout(
+            "Включён тестовый режим Robokassa",
+            "Деньги не списываются, комплект выдаётся бесплатно. Для боевого приёма оплаты "
+            "уберите ROBOKASSA_TEST_MODE=1 и перезапустите сервис.",
+            tone="warn",
+        )
+        if test_mode
+        else Raw("")
+    )
     switches = join(
         [
             f'<li>Приём оплаты: <strong>{"включён" if payments_enabled else "выключен"}</strong></li>',
@@ -454,18 +507,35 @@ def build_admin_page(
         "<th>Событие</th><th>Всего</th>"
         f"</tr></thead><tbody>{esc(funnel_rows)}</tbody></table></div>"
     )
+    # RU: Тестовые оплаты — отдельная плитка и явное «не выручка»: 799 ₽ «из
+    # воздуха» должны быть видны сразу, а не всплывать при сверке с выпиской.
+    test_kpi = (
+        f"<div><span>Тестовые оплаты (не выручка)</span>"
+        f"<strong>{esc(test_count)} на {esc(test_amount)} ₽</strong></div>"
+        if test_count
+        else ""
+    )
     kpi = Raw(
         '<div class="admin-kpi">'
-        f'<div><span>Оплачено заказов</span><strong>{esc(stats.get("paid_count", 0))}</strong></div>'
+        f'<div><span>Оплачено заказов (боевые)</span><strong>{esc(stats.get("paid_count", 0))}</strong></div>'
         f"<div><span>Выручка</span><strong>{esc(paid_amount)} ₽</strong></div>"
+        f"{test_kpi}"
         "</div>"
+    )
+    logout = Raw(
+        '<form method="POST" action="/admin/" class="adminlogout">'
+        '<input type="hidden" name="action" value="logout">'
+        '<button class="btn btn-s" type="submit">Выйти</button>'
+        "</form>"
     )
     body = Raw(
         "<h1>Панель</h1>"
+        f"{esc(test_banner)}"
         f"{esc(kpi)}"
         f"{esc(section('Состояние', Raw(f'<ul>{esc(switches)}</ul>')))}"
         f"{esc(section('Последние заказы', orders_table))}"
         f"{esc(section('Воронка', funnel_table))}"
+        f"{esc(logout)}"
     )
     meta = PageMeta(path="/admin/", title="Панель", description="Служебная страница.", noindex=True)
     return meta, body

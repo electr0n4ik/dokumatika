@@ -40,12 +40,18 @@ class RunningServer:
         method: str = "GET",
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
+        follow_redirects: bool = True,
     ) -> tuple[int, str, dict[str, str]]:
         request = urllib.request.Request(
             self.base + path, data=data, method=method, headers=headers or {}
         )
+        # RU: urllib по умолчанию идёт по 302 и превращает POST в GET — для
+        # проверки самого редиректа (вход в админку) это надо уметь выключать.
+        opener = urllib.request.urlopen
+        if not follow_redirects:
+            opener = urllib.request.build_opener(NoRedirect()).open
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with opener(request, timeout=10) as response:
                 return response.status, response.read().decode("utf-8"), dict(response.headers)
         except urllib.error.HTTPError as error:
             return error.code, error.read().decode("utf-8"), dict(error.headers)
@@ -112,10 +118,11 @@ def live_server(tmp_path: Path) -> Iterator[RunningServer]:
 
 class TestServiceEndpoints:
     def test_healthz_reports_ok(self, live_server: RunningServer) -> None:
+        """Публичный ответ — только «жив»: подробности см. test_server_hardening."""
         status, body, _ = live_server.request("/healthz")
         payload = json.loads(body)
         assert status == HTTPStatus.OK
-        assert payload["status"] == "ok" and payload["db"] == "ok"
+        assert payload == {"status": "ok"}
 
     def test_robots_served(self, live_server: RunningServer) -> None:
         status, body, headers = live_server.request("/robots.txt")
@@ -192,15 +199,33 @@ class TestStatic:
 
 class TestAdmin:
     def test_requires_token(self, live_server: RunningServer) -> None:
-        status, _, _ = live_server.request("/admin/")
-        assert status == HTTPStatus.FORBIDDEN
+        status, body, _ = live_server.request("/admin/")
+        assert status == HTTPStatus.UNAUTHORIZED
+        assert "Вход в панель" in body and "Панель</h1>" not in body
 
     def test_wrong_token_rejected(self, live_server: RunningServer) -> None:
-        status, _, _ = live_server.request("/admin/?token=wrong")
+        """Неверный токен из формы — 403 и никакой куки."""
+        status, _, headers = live_server.request(
+            "/admin/",
+            method="POST",
+            data=urllib.parse.urlencode({"token": "wrong"}).encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
         assert status == HTTPStatus.FORBIDDEN
+        assert "Set-Cookie" not in headers
 
     def test_valid_token_grants_access(self, live_server: RunningServer) -> None:
-        status, body, _ = live_server.request("/admin/?token=admin-secret")
+        """Вход только формой: токен не должен попадать в адресную строку."""
+        status, _, headers = live_server.request(
+            "/admin/",
+            method="POST",
+            data=urllib.parse.urlencode({"token": "admin-secret"}).encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        assert status == HTTPStatus.FOUND and headers["Location"] == "/admin/"
+        cookie = headers["Set-Cookie"].split(";")[0]
+        status, body, _ = live_server.request("/admin/", headers={"Cookie": cookie})
         assert status == HTTPStatus.OK and "Панель" in body
 
 

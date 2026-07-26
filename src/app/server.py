@@ -27,11 +27,13 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import secrets
 import signal
 import sys
 import threading
 import time
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -69,6 +71,60 @@ STATIC_CONTENT_TYPES = {
 
 STARTED_AT = time.time()
 
+# RU: Методы, которые сайт действительно обслуживает. Значение уезжает в заголовок
+# ``Allow`` ответа 405 — по RFC 7231 он там обязателен.
+ALLOWED_METHODS = "GET, HEAD, POST"
+
+ADMIN_COOKIE_NAME = "dokumatika_admin"
+ADMIN_SESSION_TTL_S = 12 * 3600
+# RU: Владелец один; потолок нужен только чтобы неудачные входы не копили мусор.
+MAX_ADMIN_SESSIONS = 16
+
+
+class AdminSessions:
+    """Сессии админки в памяти процесса.
+
+    В куку кладётся одноразовый идентификатор, а не сам ``ADMIN_TOKEN``: кука
+    живёт в браузере и в его хранилище, токен — в ``.env``, и утечка первой не
+    должна раскрывать второй. Хранилище в памяти выбрано осознанно: перезапуск
+    сервиса разлогинивает, но для одной админки это дешевле таблицы в базе.
+    """
+
+    def __init__(self, ttl_s: int = ADMIN_SESSION_TTL_S) -> None:
+        self._ttl = int(ttl_s)
+        self._lock = threading.Lock()
+        self._sessions: dict[str, float] = {}
+
+    def create(self) -> str:
+        session_id = secrets.token_urlsafe(32)
+        now = time.time()
+        with self._lock:
+            self._prune(now)
+            if len(self._sessions) >= MAX_ADMIN_SESSIONS:
+                self._sessions.pop(next(iter(self._sessions)), None)
+            self._sessions[session_id] = now + self._ttl
+        return session_id
+
+    def is_valid(self, session_id: str) -> bool:
+        candidate = str(session_id or "")
+        if not candidate:
+            return False
+        with self._lock:
+            self._prune(time.time())
+            known = list(self._sessions)
+        # RU: Идентификатор сессии — такой же секрет, как токен: сравниваем за
+        # постоянное время и в байтах (compare_digest на не-ASCII str кидает TypeError).
+        needle = candidate.encode("utf-8")
+        return any(secrets.compare_digest(item.encode("utf-8"), needle) for item in known)
+
+    def drop(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(str(session_id or ""), None)
+
+    def _prune(self, now: float) -> None:
+        for key in [key for key, expires_at in self._sessions.items() if expires_at <= now]:
+            del self._sessions[key]
+
 
 class AppState:
     """Собранное приложение: конфиги, база, репозитории.
@@ -89,6 +145,7 @@ class AppState:
         self.database = database
         self.orders = OrdersRepository(database)
         self.metrics = MetricsRepository(database)
+        self.admin_sessions = AdminSessions()
         self.robokassa = load_robokassa_config()
         self.product = get_product(DEFAULT_PRODUCT_CODE)
         if self.product is None:  # pragma: no cover - защита от опечатки в каталоге
@@ -128,6 +185,18 @@ class AppHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "dokumatika"
     sys_version = ""
+
+    # RU: Без таймаута поток навсегда виснет в rfile.read() на недосланном теле, а
+    # поток здесь создаётся на КАЖДОЕ соединение. StreamRequestHandler.setup() сам
+    # применит это значение к сокету.
+    #
+    # Два разных срока не от любви к настройкам. `timeout` — это ещё и ожидание
+    # СЛЕДУЮЩЕГО запроса на keep-alive-соединении, и он обязан быть больше
+    # `keepalive_timeout 60s` у апстрима в nginx: если простаивающее соединение
+    # первым закроет приложение, nginx может отдать 502 — в том числе на
+    # /robokassa/result. А на чтение уже начатого запроса столько не нужно.
+    timeout = 75
+    request_timeout = 20
 
     state: AppState  # проставляется фабрикой ниже
 
@@ -170,11 +239,18 @@ class AppHandler(BaseHTTPRequestHandler):
     def _send_text(self, status: HTTPStatus | int, text: str, **kwargs: Any) -> None:
         self._send(status, text.encode("utf-8"), "text/plain; charset=utf-8", **kwargs)
 
-    def _send_error_page(self, status: HTTPStatus, title: str, message: str) -> None:
+    def _send_error_page(
+        self,
+        status: HTTPStatus,
+        title: str,
+        message: str,
+        *,
+        extra_headers: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         html = render_error(
             self.state.site, self.state.runtime, code=int(status), title=title, message=message
         )
-        self._send_html(status, html, max_age=0)
+        self._send_html(status, html, max_age=0, extra_headers=extra_headers)
 
     # ---------------------------------------------------------------- ввод
 
@@ -263,6 +339,20 @@ class AppHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._route("POST")
 
+    # RU: Без этих методов http.server отдаёт свою английскую страницу 501, а наша
+    # ветка «Метод не поддерживается» в _route была недостижима.
+    def do_PUT(self) -> None:  # noqa: N802
+        self._route("PUT")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._route("DELETE")
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._route("PATCH")
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._route("OPTIONS")
+
     def _route(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -271,15 +361,18 @@ class AppHandler(BaseHTTPRequestHandler):
         # RU: Экземпляр обработчика переиспользуется на keep-alive-соединении,
         # поэтому пометку «тело прочитано» сбрасываем на каждый запрос.
         self._body_consumed = False
+        # RU: Заголовки уже прочитаны — остаток запроса ждём по короткому сроку,
+        # а долгое ожидание возвращаем перед следующим запросом в соединении.
+        self._set_socket_timeout(self.request_timeout)
 
         try:
             # RU: Колбэк платёжной системы работает даже в maintenance — иначе
             # деньги спишутся, а заказ останется неоплаченным.
-            if path == "/robokassa/result":
+            if path == "/robokassa/result" and method in {"GET", "POST"}:
                 self._handle_robokassa_result(method, query)
                 return
 
-            if path == "/healthz":
+            if path == "/healthz" and method == "GET":
                 self._handle_healthz()
                 return
 
@@ -303,9 +396,19 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
 
             self._send_error_page(
-                HTTPStatus.METHOD_NOT_ALLOWED, "Метод не поддерживается", "Попробуйте открыть страницу заново."
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                "Метод не поддерживается",
+                "Страницу можно открыть или отправить форму — других способов у сайта нет.",
+                extra_headers=(("Allow", ALLOWED_METHODS),),
             )
-        except BrokenPipeError:  # pragma: no cover - клиент отвалился
+        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - клиент отвалился
+            self.close_connection = True
+            return
+        except TimeoutError:
+            # RU: Клиент не дослал тело за отведённое время. Отвечать некому —
+            # тихо закрываем соединение и освобождаем поток.
+            self.close_connection = True
+            log_event("request_timeout", path=path, method=method)
             return
         except Exception as error:  # pragma: no cover - последний рубеж
             log_event("unhandled_error", path=path, method=method, error=repr(error))
@@ -316,6 +419,13 @@ class AppHandler(BaseHTTPRequestHandler):
             )
         finally:
             self._drain_body()
+            self._set_socket_timeout(self.timeout)
+
+    def _set_socket_timeout(self, value: float | None) -> None:
+        try:
+            self.connection.settimeout(value)
+        except OSError:  # pragma: no cover - сокет уже закрыт
+            pass
 
     # ----------------------------------------------------------- статика
 
@@ -463,6 +573,9 @@ class AppHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/track":
             self._handle_track()
+            return
+        if path == "/admin/":
+            self._handle_admin_form()
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"}, max_age=0)
 
@@ -655,37 +768,145 @@ class AppHandler(BaseHTTPRequestHandler):
     # --------------------------------------------------------- служебное
 
     def _handle_healthz(self) -> None:
+        """Наружу — только «жив или нет».
+
+        Состояние платёжного контура, время с рестарта и размер WAL — это
+        разведданные: по ним видно окно, когда ResultURL мог не дойти, и включён
+        ли приём оплаты. Подробности отдаём только по админ-токену.
+        """
         state = self.state
+        detailed = self._is_admin()
         try:
             health = state.database.healthcheck()
         except Exception as error:
-            self._send_json(
-                HTTPStatus.SERVICE_UNAVAILABLE, {"status": "error", "db": repr(error)}, max_age=0
-            )
+            payload: dict[str, Any] = {"status": "error"}
+            if detailed:
+                payload["db"] = repr(error)
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, payload, max_age=0)
             return
-        payload = {
-            "status": "ok",
-            "uptime_s": int(time.time() - STARTED_AT),
-            "payments": "on" if state.payments_enabled else "off",
-            "maintenance": state.runtime.is_maintenance(),
-            **health,
-        }
-        self._send_json(HTTPStatus.OK, payload, max_age=0)
+        if not detailed:
+            self._send_json(HTTPStatus.OK, {"status": "ok"}, max_age=0)
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "status": "ok",
+                "uptime_s": int(time.time() - STARTED_AT),
+                "payments": "on" if state.payments_enabled else "off",
+                "maintenance": state.runtime.is_maintenance(),
+                "robokassa_test_mode": bool(state.robokassa is not None and state.robokassa.test_mode),
+                **health,
+            },
+            max_age=0,
+        )
 
-    def _handle_admin(self, query: dict[str, str]) -> None:
-        """Минимальная админка: сводка заказов и воронки по токену из env."""
+    # ----------------------------------------------------------- админка
+
+    def _cookie(self, name: str) -> str:
+        raw = str(self.headers.get("Cookie") or "")
+        if not raw:
+            return ""
+        jar: SimpleCookie = SimpleCookie()
+        try:
+            jar.load(raw)
+        except CookieError:
+            return ""
+        morsel = jar.get(name)
+        return str(morsel.value) if morsel is not None else ""
+
+    def _admin_token_matches(self, provided: str) -> bool:
+        token = self.state.runtime.admin_token
+        if not token or not provided:
+            return False
+        # RU: Сравниваем байты: compare_digest на str с не-ASCII кидает TypeError,
+        # и вместо 403 получалась бы 500 — она же подсказка, что токен настроен.
+        return secrets.compare_digest(provided.encode("utf-8"), token.encode("utf-8"))
+
+    def _is_admin(self) -> bool:
+        """Авторизован ли запрос: кука сессии или заголовок ``X-Admin-Token``.
+
+        Токен из query-строки НЕ принимается сознательно: ``?token=...`` целиком
+        ложится в access-лог nginx, в историю браузера, в автодополнение и в
+        Referer — а по нему видны e-mail всех покупателей. Сайт не выкачен, так
+        что обратной совместимости беречь не для кого.
+        """
+        if not self.state.runtime.admin_token:
+            return False
+        if self._admin_token_matches(str(self.headers.get("X-Admin-Token") or "")):
+            return True
+        return self.state.admin_sessions.is_valid(self._cookie(ADMIN_COOKIE_NAME))
+
+    @staticmethod
+    def _admin_cookie(value: str, *, max_age: int) -> str:
+        """Кука сессии: недоступна JS, только по HTTPS, не уходит с чужих сайтов."""
+        return (
+            f"{ADMIN_COOKIE_NAME}={value}; Path=/admin/; Max-Age={int(max_age)}; "
+            "HttpOnly; Secure; SameSite=Strict"
+        )
+
+    def _send_admin_login(
+        self, status: HTTPStatus, *, error: str = "", query_token_seen: bool = False
+    ) -> None:
         state = self.state
-        token = state.runtime.admin_token
-        if not token:
+        meta, body = handlers.build_admin_login_page(
+            site=state.site, error=error, query_token_seen=query_token_seen
+        )
+        html = render_page(site=state.site, runtime=state.runtime, meta=meta, body=body)
+        headers: tuple[tuple[str, str], ...] = ()
+        if status == HTTPStatus.UNAUTHORIZED:
+            headers = (("WWW-Authenticate", 'Token realm="dokumatika-admin"'),)
+        self._send_html(status, html, max_age=0, extra_headers=headers)
+
+    def _handle_admin_form(self) -> None:
+        """POST /admin/: вход по токену и выход."""
+        state = self.state
+        if not state.runtime.admin_token:
             self._send_error_page(
                 HTTPStatus.NOT_FOUND, "Страница не найдена", "Админка отключена в настройках."
             )
             return
-        provided = str(query.get("token") or self.headers.get("X-Admin-Token") or "")
-        import secrets as _secrets
+        form = self._read_form()
+        if str(form.get("action") or "") == "logout":
+            state.admin_sessions.drop(self._cookie(ADMIN_COOKIE_NAME))
+            self._send(
+                HTTPStatus.FOUND,
+                b"",
+                "text/plain; charset=utf-8",
+                extra_headers=(("Location", "/admin/"), ("Set-Cookie", self._admin_cookie("", max_age=0))),
+                max_age=0,
+            )
+            return
+        if not self._admin_token_matches(str(form.get("token") or "")):
+            log_event("admin_login_failed", ip=self._client_ip())
+            self._send_admin_login(HTTPStatus.FORBIDDEN, error="Неверный токен.")
+            return
+        session_id = state.admin_sessions.create()
+        log_event("admin_login_ok", ip=self._client_ip())
+        # RU: После проверки — редирект на чистый /admin/ без параметров, дальше
+        # ходим по куке.
+        self._send(
+            HTTPStatus.FOUND,
+            b"",
+            "text/plain; charset=utf-8",
+            extra_headers=(
+                ("Location", "/admin/"),
+                ("Set-Cookie", self._admin_cookie(session_id, max_age=ADMIN_SESSION_TTL_S)),
+            ),
+            max_age=0,
+        )
 
-        if not _secrets.compare_digest(provided, token):
-            self._send_error_page(HTTPStatus.FORBIDDEN, "Доступ закрыт", "Неверный токен.")
+    def _handle_admin(self, query: dict[str, str]) -> None:
+        """Минимальная админка: сводка заказов и воронки. Вход — формой, не ссылкой."""
+        state = self.state
+        if not state.runtime.admin_token:
+            self._send_error_page(
+                HTTPStatus.NOT_FOUND, "Страница не найдена", "Админка отключена в настройках."
+            )
+            return
+        if not self._is_admin():
+            self._send_admin_login(
+                HTTPStatus.UNAUTHORIZED, query_token_seen=bool(query.get("token"))
+            )
             return
 
         meta, body = handlers.build_admin_page(
@@ -725,14 +946,24 @@ def serve(state: AppState | None = None) -> None:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
+    test_mode = bool(app_state.robokassa is not None and app_state.robokassa.test_mode)
     log_event(
         "server_started",
         host=app_state.runtime.host,
         port=app_state.runtime.port,
         payments="on" if app_state.payments_enabled else "off",
+        robokassa_test_mode=test_mode,
         database=str(app_state.runtime.database_path),
         pid=os.getpid(),
     )
+    if test_mode:
+        # RU: Отдельное событие, чтобы мониторинг мог алертить именно на него:
+        # забытый ROBOKASSA_TEST_MODE=1 раздаёт комплект бесплатно.
+        log_event(
+            "robokassa_test_mode_enabled",
+            severity="error",
+            hint="деньги не списываются, комплект выдаётся бесплатно",
+        )
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
