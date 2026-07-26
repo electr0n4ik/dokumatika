@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Докуматика">
+  <title>Докуматика</title>
+  <rect width="32" height="32" rx="8" ry="8" fill="#1D4ED8"/>
+  <!-- Буква «Д»: контур с вырезанным просветом (fill-rule="evenodd"), без текста и шрифтов. -->
+  <path fill="#FFFFFF" fill-rule="evenodd"
+        d="M9.2 7 H23.6 V20.6 H25.8 V25.4 H22.6 V23.2 H9.4 V25.4 H6.2 V20.6 Z
+           M11.7 10 H20.4 V20.6 H9.4 Z"/>
+</svg>

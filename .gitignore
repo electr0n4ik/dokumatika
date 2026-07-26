@@ -1,0 +1,40 @@
+# Рабочие данные приложения: база, бэкапы, файл-маркер MAINTENANCE, логи.
+var/
+
+# База в любом месте, включая -wal и -shm.
+*.sqlite3
+*.sqlite3-*
+*.db
+
+# Секреты. .env.example остаётся в git намеренно.
+.env
+.env.local
+.env.*.local
+
+# Бэкапы и архивы выгрузок.
+*.bak
+*.dump
+*.tar.gz
+*.zip
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Редакторы и ОС
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Логи (в проде логи идут в journald, локально могут падать в файл)
+*.log

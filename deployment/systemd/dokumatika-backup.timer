@@ -1,0 +1,24 @@
+# Ежедневная резервная копия базы.
+#
+# Установка: /etc/systemd/system/dokumatika-backup.timer
+#   systemctl daemon-reload && systemctl enable --now dokumatika-backup.timer
+#   systemctl list-timers dokumatika-backup.timer   # когда сработает
+
+[Unit]
+Description=Ежедневная резервная копия базы Докуматики
+Documentation=file:///opt/dokumatika/deployment/ROLLOUT.md
+
+[Timer]
+# RU: 04:17, а не 04:00: в круглые часы на сервере просыпаются logrotate,
+# certbot и таймеры соседних проектов — на 2 vCPU это заметный всплеск.
+OnCalendar=*-*-* 04:17:00
+# RU: Разброс до 10 минут разводит бэкапы нескольких проектов во времени.
+RandomizedDelaySec=600
+AccuracySec=1m
+# RU: Если сервер был выключен в момент срабатывания — сделать копию сразу
+# после включения, а не ждать следующих суток.
+Persistent=true
+Unit=dokumatika-backup.service
+
+[Install]
+WantedBy=timers.target

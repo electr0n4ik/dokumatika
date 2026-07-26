@@ -1,0 +1,129 @@
+# Сервис сайта dokumatika.ru.
+#
+# Установка: /etc/systemd/system/dokumatika.service
+#   systemctl daemon-reload && systemctl enable --now dokumatika
+#
+# Раскладка на диске (менять только вместе с ProtectHome/ReadWritePaths ниже):
+#   /opt/dokumatika          — код, только чтение
+#   /var/lib/dokumatika      — база SQLite, единственный каталог на запись
+#   /etc/dokumatika/.env     — секреты, root:dokumatika 0640
+#
+# Почему код в /opt, а не в /home: ProtectHome=yes делает /home невидимым для
+# процесса, и сервис, запущенный из домашнего каталога, падает с «No such file
+# or directory» на собственном __main__. Отключать ProtectHome ради удобства не
+# стоит — именно он не даёт процессу читать ~/.ssh соседей по серверу.
+
+[Unit]
+Description=Докуматика — генератор документов по 152-ФЗ (dokumatika.ru)
+Documentation=file:///opt/dokumatika/deployment/ROLLOUT.md
+After=network-online.target
+Wants=network-online.target
+# RU: StartLimit* живут в [Unit], а НЕ в [Service]. В [Service] systemd их молча
+# игнорирует, и сервис, падающий на старте, крутится в бесконечном рестарте.
+# 5 попыток за 5 минут — дальше сервис останавливается и ждёт человека.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=dokumatika
+Group=dokumatika
+Slice=apps.slice
+WorkingDirectory=/opt/dokumatika
+
+# --------------------------------------------------------------- окружение
+# RU: Порядок важен: сначала значения по умолчанию, потом EnvironmentFile —
+# systemd применяет их в порядке появления, поэтому .env перекрывает всё, что
+# выше, и правка боевых настроек не требует правки юнита.
+Environment=PYTHONPATH=/opt/dokumatika/src
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# RU: Без явной кодировки в C-локали print() с кириллицей падает на
+# UnicodeEncodeError — а у нас по-русски пишутся логи.
+Environment=LANG=C.UTF-8
+Environment=PYTHONIOENCODING=utf-8
+Environment=APP_HOST=127.0.0.1
+Environment=APP_PORT=8081
+Environment=DATABASE_PATH=/var/lib/dokumatika/dokumatika.sqlite3
+Environment=STATIC_ROOT=/opt/dokumatika/src/static
+EnvironmentFile=/etc/dokumatika/.env
+
+ExecStart=/usr/bin/python3 -m app.server
+
+Restart=always
+RestartSec=3
+# RU: Приложение по SIGTERM закрывает слушающий сокет и дорабатывает запросы;
+# 20 секунд с запасом хватает, дальше systemd применит SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dokumatika
+
+# ------------------------------------------------------------------ лимиты
+# RU: Один такой сайт в покое занимает ~45-60 МБ. MemoryHigh=192M — мягкий
+# порог (ядро тормозит группу, но не убивает), MemoryMax=320M — жёсткий:
+# упереться в него можно только при утечке, и тогда рестарт лучше деградации.
+MemoryAccounting=yes
+MemoryHigh=192M
+MemoryMax=320M
+# RU: Своп процессу запрещён: страница, ушедшая на диск, превращает ответ за
+# 5 мс в ответ за 500 мс. Пусть лучше сработает лимит и сервис перезапустится.
+MemorySwapMax=0
+
+CPUAccounting=yes
+CPUQuota=60%
+CPUWeight=100
+
+TasksAccounting=yes
+# RU: ThreadingHTTPServer создаёт поток на соединение. 96 — потолок, за которым
+# скорее утечка потоков, чем реальная нагрузка (nginx держит keep-alive пул).
+TasksMax=96
+LimitNOFILE=4096
+
+# ----------------------------------------------------------------- защита
+NoNewPrivileges=yes
+# RU: ProtectSystem=strict монтирует ВСЮ файловую систему только для чтения,
+# кроме /dev, /proc, /sys и явных ReadWritePaths. Каталог базы обязан быть в
+# ReadWritePaths целиком: в режиме WAL SQLite создаёт рядом с базой файлы
+# -wal и -shm, поэтому права на один файл базы недостаточно.
+ProtectSystem=strict
+ProtectHome=yes
+StateDirectory=dokumatika
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/dokumatika
+
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# RU: AF_UNIX обязателен — через unix-сокет идёт запись в journald. Без него
+# сервис стартует, но логов нет вообще, и отладка превращается в гадание.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# RU: IPAddressDeny=any здесь НЕ ставим. Он обрубил бы исходящие соединения:
+# SMTP-письмо с доступом к документам, пинг IndexNow, сверку платежей через
+# OpStateExt. Входящие и так закрыты — сервис слушает только 127.0.0.1.
+
+[Install]
+WantedBy=multi-user.target

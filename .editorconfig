@@ -1,0 +1,27 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 110
+
+[*.py]
+indent_size = 4
+
+[*.{js,css,html,json,yml,yaml,xml,svg,toml}]
+indent_size = 2
+
+# В Makefile отступ рецепта — только табуляция, иначе make не запустится.
+[Makefile]
+indent_style = tab
+
+# Два пробела в конце строки в Markdown — это перенос, их нельзя срезать.
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{conf,service}]
+indent_size = 4
