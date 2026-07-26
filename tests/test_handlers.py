@@ -24,8 +24,8 @@ from app.handlers import (
     validate_email,
 )
 from app.products import KOMPLEKT_152FZ
-from app.robokassa import build_signature_base, hash_signature
 from app.repositories.orders_repository import OrdersRepository
+from app.robokassa import build_signature_base, hash_signature
 
 
 def valid_payload(**overrides) -> dict:

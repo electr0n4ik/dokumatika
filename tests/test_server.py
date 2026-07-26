@@ -21,7 +21,6 @@ import pytest
 
 from app.config import RuntimeConfig, SellerConfig, SiteConfig, SmtpConfig
 from app.db import Database
-from app.products import KOMPLEKT_152FZ
 from app.robokassa import RobokassaConfig, build_signature_base, hash_signature
 from app.server import AppState, Server, make_handler
 

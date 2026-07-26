@@ -323,18 +323,29 @@ def build_checkout_page(
 def build_order_page(*, order: Order, product: Product, site: SiteConfig) -> tuple[PageMeta, Raw]:
     """Страница заказа — она же выдача документов после оплаты."""
     if order.is_paid:
-        documents = join(
-            [f"<li>{esc(document.title)}</li>" for document in PAID_DOCUMENTS]
+        documents = join([f"<li>{esc(document.title)}</li>" for document in PAID_DOCUMENTS])
+        save_hint = callout(
+            "Сохраните эту ссылку",
+            "Она открывает доступ к вашим документам в любой момент.",
+            tone="info",
+        )
+        disclaimer = legal_note(
+            "Документы формируются из ваших ответов и являются типовыми. "
+            "Это не юридическая консультация."
+        )
+        mount = (
+            f'<div id="package-app" data-order-paid="1" '
+            f'data-order-token="{esc(order.access_token)}"></div>'
         )
         body = Raw(
             '<section class="orderpage is-paid">'
             "<h1>Оплата получена</h1>"
             f"<p>Спасибо! Комплект «{esc(product.title)}» доступен ниже. "
             f"Ссылку продублировали на {esc(order.email)} — сохраните её.</p>"
-            f'{esc(callout("Сохраните эту ссылку", "Она открывает доступ к вашим документам в любой момент.", tone="info"))}'
-            f"<h2>Что входит</h2><ul class=\"doclist\">{esc(documents)}</ul>"
-            f'<div id="package-app" data-order-paid="1" data-order-token="{esc(order.access_token)}"></div>'
-            f'{esc(legal_note("Документы формируются из ваших ответов и являются типовыми. Это не юридическая консультация."))}'
+            f"{esc(save_hint)}"
+            f'<h2>Что входит</h2><ul class="doclist">{esc(documents)}</ul>'
+            f"{mount}"
+            f"{esc(disclaimer)}"
             "</section>"
         )
         title = "Ваши документы"
@@ -389,7 +400,12 @@ def build_payment_return_page(
             "</section>"
         )
         return (
-            PageMeta(path="/oplata/otmena/", title="Оплата не завершена", description="Платёж отменён.", noindex=True),
+            PageMeta(
+                path="/oplata/otmena/",
+                title="Оплата не завершена",
+                description="Платёж отменён.",
+                noindex=True,
+            ),
             body,
         )
 
@@ -404,7 +420,12 @@ def build_payment_return_page(
         "</section>"
     )
     return (
-        PageMeta(path="/oplata/uspeh/", title="Платёж обрабатывается", description="Ожидаем подтверждение оплаты.", noindex=True),
+        PageMeta(
+            path="/oplata/uspeh/",
+            title="Платёж обрабатывается",
+            description="Ожидаем подтверждение оплаты.",
+            noindex=True,
+        ),
         body,
     )
 

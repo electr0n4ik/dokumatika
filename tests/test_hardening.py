@@ -60,9 +60,8 @@ class TestConnectionPool:
         db.ensure_schema("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)")
         try:
             FailingCommitConnection.fail_commit = True
-            with pytest.raises(sqlite3.OperationalError):
-                with db.transaction() as conn:
-                    conn.execute("INSERT INTO t (id) VALUES (1)")
+            with pytest.raises(sqlite3.OperationalError), db.transaction() as conn:
+                conn.execute("INSERT INTO t (id) VALUES (1)")
             FailingCommitConnection.fail_commit = False
             # RU: Раньше здесь было «cannot start a transaction within a transaction».
             with db.transaction() as conn:

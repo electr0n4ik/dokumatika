@@ -55,7 +55,11 @@ class Question:
         }
         if self.options:
             payload["options"] = [
-                {"value": option.value, "label": option.label, **({"hint": option.hint} if option.hint else {})}
+                {
+                    "value": option.value,
+                    "label": option.label,
+                    **({"hint": option.hint} if option.hint else {}),
+                }
                 for option in self.options
             ]
         if self.hint:

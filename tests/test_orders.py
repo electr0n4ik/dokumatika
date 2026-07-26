@@ -13,7 +13,6 @@ from app.repositories.orders_repository import (
     STATUS_CANCELED,
     STATUS_CREATED,
     STATUS_PAID,
-    STATUS_PENDING,
     OrdersRepository,
 )
 

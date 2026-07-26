@@ -24,6 +24,7 @@ Go migration notes:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import mimetypes
 import os
@@ -422,10 +423,9 @@ class AppHandler(BaseHTTPRequestHandler):
             self._set_socket_timeout(self.timeout)
 
     def _set_socket_timeout(self, value: float | None) -> None:
-        try:
+        # RU: сокет мог уже закрыться — тогда таймаут ставить не на что.
+        with contextlib.suppress(OSError):
             self.connection.settimeout(value)
-        except OSError:  # pragma: no cover - сокет уже закрыт
-            pass
 
     # ----------------------------------------------------------- статика
 
@@ -612,7 +612,9 @@ class AppHandler(BaseHTTPRequestHandler):
         order = state.orders.get_by_access_token(access_token)
         if order is None:
             self._send_error_page(
-                HTTPStatus.NOT_FOUND, "Заказ не найден", "Проверьте ссылку из письма или создайте заказ заново."
+                HTTPStatus.NOT_FOUND,
+                "Заказ не найден",
+                "Проверьте ссылку из письма или создайте заказ заново.",
             )
             return
         if order.is_paid:
@@ -665,7 +667,9 @@ class AppHandler(BaseHTTPRequestHandler):
         order = state.orders.get_by_access_token(access_token)
         if order is None:
             self._send_error_page(
-                HTTPStatus.NOT_FOUND, "Заказ не найден", "Проверьте ссылку — возможно, она скопирована не целиком."
+                HTTPStatus.NOT_FOUND,
+                "Заказ не найден",
+                "Проверьте ссылку — возможно, она скопирована не целиком.",
             )
             return
         meta, body = handlers.build_order_page(order=order, product=state.product, site=state.site)

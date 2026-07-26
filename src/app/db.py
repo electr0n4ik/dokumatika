@@ -33,7 +33,7 @@ import queue
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 # RU: 5 секунд — эмпирический порог: ниже него в бенчмарках появляются
@@ -130,10 +130,8 @@ class Database:
             # нескольких таких потерь ``_pool.get()`` повиснет навсегда. Возвращаем
             # как есть — следующий лизинг повторит попытку отката.
             return conn
-        try:
+        with suppress(sqlite3.Error):
             conn.close()
-        except sqlite3.Error:
-            pass
         return replacement
 
     def close(self) -> None:
@@ -176,10 +174,8 @@ class Database:
         Если и ``ROLLBACK`` не прошёл, соединение починит ``_recycled`` при
         возврате в пул: там оно будет заменено на новое.
         """
-        try:
+        with suppress(sqlite3.Error):
             conn.execute("ROLLBACK")
-        except sqlite3.Error:
-            pass
 
     @contextmanager
     def read(self) -> Iterator[sqlite3.Connection]:

@@ -1,9 +1,9 @@
 """Шаблоны документов и правила их сборки."""
 
 from .schema import (  # noqa: F401
+    Clause,
     Condition,
     DocumentTemplate,
-    Clause,
     evaluate_condition,
     evaluate_conditions,
     render_document,

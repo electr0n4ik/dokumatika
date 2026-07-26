@@ -14,10 +14,10 @@ import pytest
 
 from app.documents.registry import ALL_DOCUMENTS, FREE_DOCUMENTS, PAID_DOCUMENTS, documents_payload
 from app.documents.schema import (
+    PLACEHOLDER_RE,
     Clause,
     Condition,
     DocumentTemplate,
-    PLACEHOLDER_RE,
     evaluate_condition,
     evaluate_conditions,
     fill_placeholders,

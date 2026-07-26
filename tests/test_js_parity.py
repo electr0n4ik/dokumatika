@@ -264,7 +264,7 @@ def test_documents_match(js_output: dict, fixture_name: str) -> None:
             f"только в JS: {sorted(set(actual_ids) - set(expected_ids))}"
         )
 
-        for expected_clause, actual_clause in zip(expected.clauses, actual["clauses"]):
+        for expected_clause, actual_clause in zip(expected.clauses, actual["clauses"], strict=False):
             if template.code == "policy" or not answers.get("doc_date"):
                 # RU: пункты с датой по умолчанию сравниваем без неё.
                 pass

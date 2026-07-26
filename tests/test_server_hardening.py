@@ -281,8 +281,10 @@ class TestSocketTimeout:
         """Недосланное тело держало поток вечно: поток на соединение — и памяти нет."""
         state = build_state(tmp_path)
         try:
-            with running(state, handler_timeout=0.5) as port:
-                with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            with (
+                running(state, handler_timeout=0.5) as port,
+                socket.create_connection(("127.0.0.1", port), timeout=5) as sock,
+            ):
                     sock.sendall(
                         b"POST /api/track HTTP/1.1\r\nHost: t\r\n"
                         b"Content-Type: application/json\r\n"
@@ -292,7 +294,7 @@ class TestSocketTimeout:
                     try:
                         while sock.recv(4096):
                             pass
-                    except (TimeoutError, socket.timeout):
+                    except TimeoutError:
                         pytest.fail("соединение не закрылось — поток завис бы в rfile.read()")
         finally:
             state.database.close()

@@ -272,7 +272,9 @@ class OrdersRepository:
     def mark_canceled(self, order_id: str) -> Order | None:
         return self._transition(order_id, STATUS_CANCELED)
 
-    def _transition(self, order_id: str, status: str, metadata_patch: dict[str, Any] | None = None) -> Order | None:
+    def _transition(
+        self, order_id: str, status: str, metadata_patch: dict[str, Any] | None = None
+    ) -> Order | None:
         with self._db.transaction() as conn:
             row = conn.execute("SELECT * FROM orders WHERE order_id = ? LIMIT 1", (order_id,)).fetchone()
             current = self._row_to_order(row)

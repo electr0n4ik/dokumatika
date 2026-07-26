@@ -55,7 +55,15 @@ ALLOWED_HASH_ALGORITHMS = frozenset({"md5", "sha1", "sha256", "sha384", "sha512"
 # RU: Значения фискального чека. Для самозанятого/НПД без НДС — tax="none".
 # Товар цифровой и передаётся сразу -> full_payment + service.
 ALLOWED_RECEIPT_PAYMENT_METHODS = frozenset(
-    {"full_prepayment", "prepayment", "advance", "full_payment", "partial_payment", "credit", "credit_payment"}
+    {
+        "full_prepayment",
+        "prepayment",
+        "advance",
+        "full_payment",
+        "partial_payment",
+        "credit",
+        "credit_payment",
+    }
 )
 ALLOWED_RECEIPT_PAYMENT_OBJECTS = frozenset(
     {
@@ -82,7 +90,20 @@ ALLOWED_RECEIPT_PAYMENT_OBJECTS = frozenset(
 )
 # RU: vat22/vat122 и vat5/vat7 добавлены под действующие ставки НДС.
 ALLOWED_RECEIPT_TAXES = frozenset(
-    {"none", "vat0", "vat5", "vat7", "vat10", "vat20", "vat22", "vat105", "vat107", "vat110", "vat120", "vat122"}
+    {
+        "none",
+        "vat0",
+        "vat5",
+        "vat7",
+        "vat10",
+        "vat20",
+        "vat22",
+        "vat105",
+        "vat107",
+        "vat110",
+        "vat120",
+        "vat122",
+    }
 )
 
 # RU: Robokassa живёт в московском времени; zoneinfo не берём — база tzdata на
@@ -113,7 +134,7 @@ class RobokassaConfig:
     def password2_for_mode(self, is_test: bool) -> str:
         return self.test_password2 if is_test else self.password2
 
-    def with_test_mode(self, test_mode: bool) -> "RobokassaConfig":
+    def with_test_mode(self, test_mode: bool) -> RobokassaConfig:
         return replace(self, test_mode=bool(test_mode))
 
 

@@ -22,7 +22,7 @@ from .products import Product
 def build_order_email(*, site: SiteConfig, product: Product, order: Any) -> EmailMessage:
     order_url = site.url(f"/zakaz/{order.access_token}/")
     lines = [
-        f"Здравствуйте!",
+        "Здравствуйте!",
         "",
         f"Оплата за «{product.title}» получена.",
         "",

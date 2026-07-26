@@ -207,7 +207,9 @@ def _sign_result(config: RobokassaConfig, out_sum: str, invoice_id: str, order_i
 
 
 class TestResultVerification:
-    def _payload(self, config: RobokassaConfig, *, out_sum: str = "799.000000", password: str = "pass2") -> dict:
+    def _payload(
+        self, config: RobokassaConfig, *, out_sum: str = "799.000000", password: str = "pass2"
+    ) -> dict:
         return {
             "OutSum": out_sum,
             "InvId": "123",

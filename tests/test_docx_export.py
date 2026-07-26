@@ -115,7 +115,10 @@ DRIVER = textwrap.dedent(
         if (blob instanceof Uint8Array) buffer = Buffer.from(blob);
         else if (blob && typeof blob.arrayBuffer === 'function') buffer = await blob.arrayBuffer();
         else if (typeof blob === 'string') buffer = Buffer.from(blob, 'binary');
-        else { console.log(JSON.stringify({ error: 'bad_docx_type', code: template.code, type: typeof blob })); process.exit(0); }
+        else {
+          console.log(JSON.stringify({ error: 'bad_docx_type', code: template.code, type: typeof blob }));
+          process.exit(0);
+        }
         const path = outDir + '/' + template.code + '.docx';
         fs.writeFileSync(path, buffer);
         written.push({ code: template.code, path, bytes: buffer.length });
@@ -151,7 +154,13 @@ def generated(tmp_path_factory) -> dict:
     out_dir.mkdir()
 
     result = subprocess.run(
-        [NODE, str(tmp / "driver.cjs"), ",".join(str(f) for f in files), str(tmp / "input.json"), str(out_dir)],
+        [
+            NODE,
+            str(tmp / "driver.cjs"),
+            ",".join(str(f) for f in files),
+            str(tmp / "input.json"),
+            str(out_dir),
+        ],
         capture_output=True,
         text=True,
         timeout=120,
