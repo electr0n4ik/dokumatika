@@ -1,5 +1,10 @@
 # Докуматика
 
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)
+![Dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-472%20passing-brightgreen.svg)
+
 Сайт `dokumatika.ru`: бесплатный генератор политики конфиденциальности по 152-ФЗ
 и платный комплект документов для оператора персональных данных — 799 ₽.
 
